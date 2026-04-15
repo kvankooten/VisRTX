@@ -3,6 +3,8 @@
 
 #pragma once
 
+// local
+#include "UsdExportFrameSettings.hpp"
 // tsd_ui_imgui
 #include "tsd/ui/imgui/windows/Window.h"
 // tsd_rendering
@@ -19,7 +21,10 @@ namespace tsd_usd {
 // and provides UI for setting output location, triggering sync, etc.
 struct UsdDevicePanel : public tsd::ui::imgui::Window
 {
+  // exportFrames: optional shared settings (width/height/match viewport) used
+  // with Tools -> OpenUSD Sync; if null, the panel keeps its own defaults.
   UsdDevicePanel(tsd::ui::imgui::Application *app,
+      UsdExportFrameSettings *exportFrames = nullptr,
       const char *name = "USD Export");
   ~UsdDevicePanel() override;
 
@@ -64,8 +69,11 @@ struct UsdDevicePanel : public tsd::ui::imgui::Window
 
   // ANARI objects
   anari::Device m_device{nullptr};
-  anari::Frame m_frame{nullptr};
   tsd::rendering::RenderIndex *m_renderIndex{nullptr};
+  size_t m_usdRendererIndex{0};
+
+  UsdExportFrameSettings m_exportFrameStorage;
+  UsdExportFrameSettings *m_exportFrames{nullptr};
 };
 
 } // namespace tsd_usd

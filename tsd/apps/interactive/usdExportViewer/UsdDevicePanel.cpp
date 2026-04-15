@@ -2,19 +2,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "UsdDevicePanel.h"
+// local
+#include "UsdDeviceSceneSync.hpp"
 // tsd_ui_imgui
 #include "imgui.h"
 #include "tsd/ui/imgui/Application.h"
+#include "tsd/ui/imgui/windows/BaseViewport.h"
 // tsd_core
 #include "tsd/core/Logging.hpp"
+#include "tsd/core/TSDMath.hpp"
 // std
+#include <algorithm>
 #include <cstring>
+
+using namespace tsd::usd_export;
 
 namespace tsd_usd {
 
-UsdDevicePanel::UsdDevicePanel(
-    tsd::ui::imgui::Application *app, const char *name)
+UsdDevicePanel::UsdDevicePanel(tsd::ui::imgui::Application *app,
+    UsdExportFrameSettings *exportFrames,
+    const char *name)
     : Window(app, name)
+    , m_exportFrames(
+          exportFrames != nullptr ? exportFrames : &m_exportFrameStorage)
 {}
 
 UsdDevicePanel::~UsdDevicePanel()
@@ -52,8 +62,11 @@ void UsdDevicePanel::syncScene()
   float currentTime = scene.getAnimationTime();
   setTimeOnDevice(currentTime);
 
-  anari::render(m_device, m_frame);
-  anari::wait(m_device, m_frame);
+  synchronizeUsdDeviceScene(scene,
+      m_device,
+      *m_renderIndex,
+      m_usdRendererIndex,
+      m_exportFrames->resolvedSize());
 
   tsd::core::logStatus("...USD sync complete");
 }
@@ -74,6 +87,9 @@ void UsdDevicePanel::saveSettings(tsd::core::DataNode &root)
   root["usd.outputMdlShader"] = m_outputMdlShader;
   root["usd.enableSaving"] = m_enableSaving;
   root["usd.autoSync"] = m_autoSync;
+  root["usd.exportWidth"] = static_cast<int>(m_exportFrames->width);
+  root["usd.exportHeight"] = static_cast<int>(m_exportFrames->height);
+  root["usd.matchViewport"] = m_exportFrames->matchViewport;
 }
 
 void UsdDevicePanel::loadSettings(tsd::core::DataNode &root)
@@ -93,6 +109,14 @@ void UsdDevicePanel::loadSettings(tsd::core::DataNode &root)
   root["usd.outputMdlShader"].getValue(ANARI_BOOL, &m_outputMdlShader);
   root["usd.enableSaving"].getValue(ANARI_BOOL, &m_enableSaving);
   root["usd.autoSync"].getValue(ANARI_BOOL, &m_autoSync);
+
+  int iw = static_cast<int>(m_exportFrames->width);
+  int ih = static_cast<int>(m_exportFrames->height);
+  if (root["usd.exportWidth"].getValue(ANARI_INT32, &iw))
+    m_exportFrames->width = static_cast<uint32_t>(std::max(1, iw));
+  if (root["usd.exportHeight"].getValue(ANARI_INT32, &ih))
+    m_exportFrames->height = static_cast<uint32_t>(std::max(1, ih));
+  root["usd.matchViewport"].getValue(ANARI_BOOL, &m_exportFrames->matchViewport);
 }
 
 void UsdDevicePanel::setupDevice()
@@ -136,10 +160,15 @@ void UsdDevicePanel::setupDevice()
   anari::retain(m_device, m_device);
 
   auto &scene = appCore()->tsd.scene;
-  m_renderIndex = adm.acquireRenderIndex(scene, "usd", m_device);
-  m_frame = anari::newObject<anari::Frame>(m_device);
-  anari::setParameter(
-      m_device, m_frame, "world", m_renderIndex->world());
+  if (!prepareUsdExportRenderResources(
+          adm, scene, m_device, m_renderIndex, m_usdRendererIndex))
+  {
+    m_statusMessage = "USD device: no renderer subtype available";
+    tsd::core::logError("%s", m_statusMessage.c_str());
+    anari::release(m_device, m_device);
+    m_device = nullptr;
+    return;
+  }
 
   // Forward animation time changes to the USD device's usd::time parameter
   auto dev = m_device;
@@ -175,20 +204,9 @@ void UsdDevicePanel::teardownDevice()
 
   tsd::core::logStatus("tearing down USD device...");
 
-  if (m_renderIndex)
-  {
-    appCore()->anari.releaseRenderIndex(m_device);
-    m_renderIndex = nullptr;
-  }
-
-  if (m_frame)
-  {
-    anari::release(m_device, m_frame);
-    m_frame = nullptr;
-  }
-
   if (m_device)
   {
+    releaseUsdExportRenderResources(appCore()->anari, m_device, m_renderIndex);
     anari::release(m_device, m_device);
     m_device = nullptr;
   }
@@ -284,6 +302,33 @@ void UsdDevicePanel::ui_outputSettings()
     ImGui::SetTooltip("Write USD to disk. Disable for in-memory only.\n"
         "Can be changed while the device is active.");
 
+  ImGui::Separator();
+  ImGui::Text("Render product resolution");
+  if (ImGui::Checkbox("Match main viewport", &m_exportFrames->matchViewport))
+  {
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+  {
+    ImGui::SetTooltip(
+        "Use the main Viewport window's render size (after resolution scale)\n"
+        "for each USD RenderProduct. Otherwise use Width/Height below.");
+  }
+
+  ImGui::BeginDisabled(m_exportFrames->matchViewport);
+  int ew = static_cast<int>(m_exportFrames->width);
+  int eh = static_cast<int>(m_exportFrames->height);
+  if (ImGui::InputInt("Width", &ew))
+    m_exportFrames->width = static_cast<uint32_t>(std::max(1, ew));
+  if (ImGui::InputInt("Height", &eh))
+    m_exportFrames->height = static_cast<uint32_t>(std::max(1, eh));
+  ImGui::EndDisabled();
+
+  if (m_exportFrames->matchViewport && m_exportFrames->mainViewport != nullptr)
+  {
+    const auto rs = m_exportFrames->mainViewport->renderPixelSize();
+    ImGui::TextDisabled("Viewport render: %d x %d", rs.x, rs.y);
+  }
+
   ImGui::Unindent();
 }
 
@@ -317,8 +362,13 @@ void UsdDevicePanel::ui_controls()
 
     if (m_autoSync && m_deviceReady)
     {
-      anari::render(m_device, m_frame);
-      anari::wait(m_device, m_frame);
+      auto &sc = appCore()->tsd.scene;
+      setTimeOnDevice(sc.getAnimationTime());
+      synchronizeUsdDeviceScene(sc,
+          m_device,
+          *m_renderIndex,
+          m_usdRendererIndex,
+          m_exportFrames->resolvedSize());
     }
 
     ImGui::Separator();

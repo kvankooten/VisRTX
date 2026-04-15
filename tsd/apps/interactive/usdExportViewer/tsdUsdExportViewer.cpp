@@ -3,6 +3,11 @@
 
 // tsd_io
 #include <tsd/io/procedural.hpp>
+// tsd_core
+#include "tsd/core/Timer.hpp"
+#include "tsd/core/TSDMath.hpp"
+// tsd_rendering
+#include "tsd/rendering/index/RenderIndex.hpp"
 // tsd_ui_imgui
 #include <tsd/ui/imgui/Application.h>
 #include <tsd/ui/imgui/windows/Animations.h>
@@ -12,8 +17,12 @@
 #include <tsd/ui/imgui/windows/ObjectEditor.h>
 #include <tsd/ui/imgui/windows/Timeline.h>
 #include <tsd/ui/imgui/windows/Viewport.h>
+// anari
+#include <anari/anari_cpp.hpp>
 // local
+#include "UsdDeviceSceneSync.hpp"
 #include "UsdDevicePanel.h"
+#include "UsdExportFrameSettings.hpp"
 // std
 #include <chrono>
 
@@ -28,6 +37,76 @@ class Application : public TSDApplication
   Application(int argc, const char *argv[]) : TSDApplication(argc, argv) {}
   ~Application() override = default;
 
+ protected:
+  bool hasUsdExportMenu() const override
+  {
+    return true;
+  }
+
+  void setupUsdDevice() override
+  {
+    if (usdDeviceIsSetup())
+      return;
+
+    auto d = m_usdDevice.device;
+
+    if (d == nullptr)
+    {
+      d = appCore()->anari.loadDevice("usd");
+      if (!d)
+      {
+        tsd::core::logWarning("USD device failed to load");
+        return;
+      }
+      anari::retain(d, d);
+      m_usdDevice.device = d;
+    }
+
+    if (!tsd::usd_export::prepareUsdExportRenderResources(appCore()->anari,
+            appCore()->tsd.scene,
+            d,
+            m_usdDevice.renderIndex,
+            m_usdDevice.usdRendererIndex))
+      return;
+  }
+
+  bool usdDeviceIsSetup() const override
+  {
+    return m_usdDevice.device != nullptr && m_usdDevice.renderIndex != nullptr;
+  }
+
+  void syncUsdScene() override
+  {
+    tsd::core::logStatus("synchronizing USD ANARI device scene...");
+    if (!usdDeviceIsSetup())
+    {
+      tsd::core::logWarning("USD device not setup -- cannot sync scene");
+      return;
+    }
+    tsd::core::Timer timer;
+    timer.start();
+    const tsd::math::uint2 fsz = m_exportFrame.resolvedSize();
+    tsd::usd_export::synchronizeUsdDeviceScene(appCore()->tsd.scene,
+        m_usdDevice.device,
+        *m_usdDevice.renderIndex,
+        m_usdDevice.usdRendererIndex,
+        fsz);
+    timer.end();
+    tsd::core::logStatus("...sync complete (%.2f ms)", timer.milliseconds());
+  }
+
+  void teardownUsdDevice() override
+  {
+    if (!usdDeviceIsSetup())
+      return;
+    tsd::core::logStatus("tearing down USD device...");
+    auto d = m_usdDevice.device;
+    tsd::usd_export::releaseUsdExportRenderResources(
+        appCore()->anari, d, m_usdDevice.renderIndex);
+    anari::release(d, d);
+    m_usdDevice.device = nullptr;
+  }
+
   anari_viewer::WindowArray setupWindows() override
   {
     auto windows = TSDApplication::setupWindows();
@@ -36,7 +115,8 @@ class Application : public TSDApplication
 
     auto *viewport =
         new tsd_ui::Viewport(this, &core->view.manipulator, "Viewport");
-    auto *usdPanel = new tsd_usd::UsdDevicePanel(this);
+    m_exportFrame.mainViewport = viewport;
+    auto *usdPanel = new tsd_usd::UsdDevicePanel(this, &m_exportFrame);
     auto *animations = new tsd_ui::Animations(this);
     auto *timeline = new tsd_ui::Timeline(this);
     auto *log = new tsd_ui::Log(this);
@@ -152,6 +232,16 @@ DockSpace         ID=0x80F5B4C5 Window=0x079D3A04 Pos=0,26 Size=1920,1054 Split=
     DockNode      ID=0x00000005 Parent=0x00000002 SizeRef=1371,255 Selected=0x139FDA3F
 )layout";
   }
+
+ private:
+  struct UsdDeviceState
+  {
+    anari::Device device{nullptr};
+    tsd::rendering::RenderIndex *renderIndex{nullptr};
+    size_t usdRendererIndex{0};
+  } m_usdDevice;
+
+  tsd_usd::UsdExportFrameSettings m_exportFrame;
 };
 
 } // namespace tsd_usd_viewer

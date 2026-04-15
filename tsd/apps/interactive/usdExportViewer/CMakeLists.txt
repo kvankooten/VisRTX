@@ -4,6 +4,8 @@
 project(tsdUsdExportViewer)
 project_add_executable(
   UsdDevicePanel.cpp
+  UsdDeviceSceneSync.cpp
+  UsdExportFrameSettings.cpp
   tsdUsdExportViewer.cpp
 )
 project_link_libraries(PUBLIC tsd_ui_imgui)
