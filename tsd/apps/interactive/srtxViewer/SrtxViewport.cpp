@@ -320,7 +320,11 @@ void SrtxViewport::ui_menubar()
 
 void SrtxViewport::ui_settingsPanel()
 {
-  float panelWidth = 350.f;
+  // Wide enough for long URLs; fields use full child width (label above input).
+  const float maxPanelWidth = 560.f;
+  const float padding = 8.f;
+  float availW = ImGui::GetContentRegionAvail().x - padding;
+  float panelWidth = std::min(maxPanelWidth, std::max(280.f, availW));
   ImVec2 contentStart = ImGui::GetCursorStartPos();
   float menuBarHeight = ImGui::GetFrameHeight();
 
@@ -343,7 +347,9 @@ void SrtxViewport::ui_settingsPanel()
 
     char serverBuf[256] = {};
     std::strncpy(serverBuf, m_serverUrl.c_str(), sizeof(serverBuf) - 1);
-    if (ImGui::InputText("Server URL", serverBuf, sizeof(serverBuf)))
+    ImGui::TextUnformatted("Server URL");
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::InputText("##srtxServerUrl", serverBuf, sizeof(serverBuf)))
     {
       m_serverUrl = serverBuf;
       m_paramsChanged = true;
@@ -351,7 +357,9 @@ void SrtxViewport::ui_settingsPanel()
 
     char stageBuf[512] = {};
     std::strncpy(stageBuf, m_stageUrl.c_str(), sizeof(stageBuf) - 1);
-    if (ImGui::InputText("Stage URL", stageBuf, sizeof(stageBuf)))
+    ImGui::TextUnformatted("Stage URL");
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::InputText("##srtxStageUrl", stageBuf, sizeof(stageBuf)))
     {
       m_stageUrl = stageBuf;
       m_paramsChanged = true;
@@ -359,7 +367,9 @@ void SrtxViewport::ui_settingsPanel()
 
     char cameraBuf[256] = {};
     std::strncpy(cameraBuf, m_cameraPath.c_str(), sizeof(cameraBuf) - 1);
-    if (ImGui::InputText("Camera Path", cameraBuf, sizeof(cameraBuf)))
+    ImGui::TextUnformatted("Camera Path");
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::InputText("##srtxCameraPath", cameraBuf, sizeof(cameraBuf)))
     {
       m_cameraPath = cameraBuf;
       m_paramsChanged = true;
