@@ -6,7 +6,7 @@ project_add_executable(
   SrtxViewport.cpp
   tsdSrtxViewer.cpp
 )
-project_link_libraries(PUBLIC tsd_ui_imgui)
+project_link_libraries(PUBLIC tsd_ui_imgui PRIVATE stb_image)
 
 
 install(TARGETS ${PROJECT_NAME}

@@ -67,6 +67,12 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   tsd::rendering::ClearBuffersPass *m_clearPass{nullptr};
   tsd::rendering::CopyToColorBufferPass *m_incomingFramePass{nullptr};
   tsd::rendering::CopyToSDLTexturePass *m_outputPass{nullptr};
+
+  // Frame capture to PNG
+  bool m_saveNextFrame{false};
+  int m_screenshotIndex{0};
+  uint32_t m_lastFrameWidth{0};
+  uint32_t m_lastFrameHeight{0};
 };
 
 } // namespace tsd_srtx

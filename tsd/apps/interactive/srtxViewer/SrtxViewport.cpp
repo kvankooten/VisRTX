@@ -7,6 +7,8 @@
 #include "tsd/ui/imgui/Application.h"
 // tsd_core
 #include "tsd/core/Logging.hpp"
+// stb_image
+#include "stb_image_write.h"
 // std
 #include <algorithm>
 #include <cstring>
@@ -284,10 +286,41 @@ void SrtxViewport::renderFrame()
 
     std::memcpy(m_colorBuffer.data(), pixels, totalBytes);
 
+    m_lastFrameWidth = width;
+    m_lastFrameHeight = height;
+
     if (m_viewport.size.x != (int)width || m_viewport.size.y != (int)height)
     {
       m_viewport.size = tsd::math::int2(width, height);
       imagePipeline_setDimensions(width, height);
+    }
+
+    if (m_saveNextFrame)
+    {
+      // Flip vertically so the saved image matches what is shown on screen
+      // (the display uses uv flip, meaning the received buffer has row 0 at
+      // the bottom).
+      stbi_flip_vertically_on_write(1);
+      std::string filename =
+          "srtx_frame_" + std::to_string(m_screenshotIndex++) + ".png";
+      int ok = stbi_write_png(filename.c_str(),
+          (int)width,
+          (int)height,
+          4,
+          m_colorBuffer.data(),
+          (int)(width * bytesPerPixel));
+      if (ok)
+      {
+        m_statusMessage = "Saved frame to '" + filename + "'";
+        tsd::core::logStatus("SRTX frame saved to '%s'", filename.c_str());
+      }
+      else
+      {
+        m_statusMessage = "Failed to save frame to '" + filename + "'";
+        tsd::core::logError(
+            "Failed to save SRTX frame to '%s'", filename.c_str());
+      }
+      m_saveNextFrame = false;
     }
   }
 
@@ -395,6 +428,21 @@ void SrtxViewport::ui_settingsPanel()
     if (ImGui::Button("Disconnect"))
       teardownDevice();
     ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(
+        !m_deviceReady || m_lastFrameWidth == 0 || m_lastFrameHeight == 0);
+    if (ImGui::Button("Save Frame as PNG"))
+      m_saveNextFrame = true;
+    ImGui::EndDisabled();
+
+    if (m_lastFrameWidth > 0 && m_lastFrameHeight > 0)
+    {
+      ImGui::SameLine();
+      ImGui::TextDisabled(
+          "(%u x %u)", m_lastFrameWidth, m_lastFrameHeight);
+    }
 
     if (!m_statusMessage.empty())
     {
