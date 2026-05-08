@@ -28,6 +28,13 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   void saveSettings(tsd::core::DataNode &thisWindowRoot) override;
   void loadSettings(tsd::core::DataNode &thisWindowRoot) override;
 
+  // Override BaseViewport::viewport_reshape so dock-area changes update the
+  // viewport's logical size (used for layout/picking) without resizing the
+  // image pipeline. The pipeline is sized to the SRTX-server-provided render
+  // resolution by renderFrame() instead, so the two concepts stop fighting
+  // over m_viewport.size as a shared cache.
+  void viewport_reshape(tsd::math::int2 newWindowSize) override;
+
   void imagePipeline_populate(tsd::rendering::RenderPipeline &p) override;
 
   void camera_resetView(bool resetAzEl = true) override;
@@ -67,6 +74,12 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   tsd::rendering::ClearBuffersPass *m_clearPass{nullptr};
   tsd::rendering::CopyToColorBufferPass *m_incomingFramePass{nullptr};
   tsd::rendering::CopyToSDLTexturePass *m_outputPass{nullptr};
+
+  // Resolution at which the SRTX server is rendering (USD-defined). Distinct
+  // from m_viewport.size, which tracks the dock content area. The pipeline
+  // and SDL texture are sized to this; ImGui::Image then fits the texture
+  // into the dock area while preserving aspect ratio.
+  tsd::math::int2 m_renderSize{0, 0};
 
   // Frame capture to PNG
   bool m_saveNextFrame{false};

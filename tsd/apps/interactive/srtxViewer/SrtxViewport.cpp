@@ -74,8 +74,29 @@ void SrtxViewport::buildUI()
 
   if (m_outputPass)
   {
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    // Fit the SRTX-resolution texture into the dock content area while
+    // preserving the render aspect ratio (letterbox/pillarbox the rest).
+    // Until the first frame arrives, the pipeline is sized to the dock area
+    // so a 1:1 fit is correct as a fallback.
+    ImVec2 imageSize = avail;
+    if (m_renderSize.x > 0 && m_renderSize.y > 0
+        && avail.x > 0.f && avail.y > 0.f)
+    {
+      const float renderAspect =
+          float(m_renderSize.x) / float(m_renderSize.y);
+      const float availAspect = avail.x / avail.y;
+      if (availAspect > renderAspect)
+        imageSize.x = avail.y * renderAspect;
+      else
+        imageSize.y = avail.x / renderAspect;
+    }
+
+    const ImVec2 cursor = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(cursor.x + (avail.x - imageSize.x) * 0.5f,
+        cursor.y + (avail.y - imageSize.y) * 0.5f));
     ImGui::Image((ImTextureID)m_outputPass->getTexture(),
-        ImGui::GetContentRegionAvail(),
+        imageSize,
         ImVec2(0, 1),
         ImVec2(1, 0));
   }
@@ -116,6 +137,27 @@ void SrtxViewport::loadSettings(tsd::core::DataNode &root)
   {
     m_paramsChanged = true;
     setupDevice();
+  }
+}
+
+void SrtxViewport::viewport_reshape(tsd::math::int2 newWindowSize)
+{
+  if (newWindowSize.x <= 0 || newWindowSize.y <= 0)
+    return;
+
+  m_viewport.size = newWindowSize;
+  m_viewport.renderSize = tsd::math::int2(
+      tsd::math::float2(m_viewport.size) * m_viewport.resolutionScale);
+
+  // The pipeline and SDL texture are sized to the SRTX render resolution,
+  // not the dock area. Until the first frame arrives, fall back to the dock
+  // size so that imagePipeline_render() has a valid texture to upload to;
+  // afterwards, dock changes only affect on-screen layout and are absorbed
+  // by the aspect-correct ImGui::Image draw in buildUI().
+  if (m_renderSize.x <= 0 || m_renderSize.y <= 0)
+  {
+    BaseViewport::imagePipeline_setDimensions(
+        m_viewport.renderSize.x, m_viewport.renderSize.y);
   }
 }
 
@@ -289,17 +331,24 @@ void SrtxViewport::renderFrame()
     m_lastFrameWidth = width;
     m_lastFrameHeight = height;
 
-    if (m_viewport.size.x != (int)width || m_viewport.size.y != (int)height)
+    // Resize the pipeline and SDL texture only when the SRTX render
+    // resolution actually changes (typically once per session). m_viewport.size
+    // is intentionally left untouched so it keeps its BaseViewport meaning
+    // ("dock content area") and the dock-driven reshape stops fighting with
+    // this code over the same field.
+    const tsd::math::int2 incoming((int)width, (int)height);
+    if (m_renderSize != incoming)
     {
-      m_viewport.size = tsd::math::int2(width, height);
+      m_renderSize = incoming;
       imagePipeline_setDimensions(width, height);
     }
 
     if (m_saveNextFrame)
     {
-      // Flip vertically so the saved image matches what is shown on screen
-      // (the display uses uv flip, meaning the received buffer has row 0 at
-      // the bottom).
+      // The SRTX device returns frame data in ANARI convention (origin at
+      // the lower-left). PNG files are top-left, so flip on write to match
+      // the orientation the user sees on screen via the V-flipped
+      // ImGui::Image below.
       stbi_flip_vertically_on_write(1);
       std::string filename =
           "srtx_frame_" + std::to_string(m_screenshotIndex++) + ".png";
@@ -476,6 +525,8 @@ void SrtxViewport::ui_overlay()
   {
     ImGui::Text("SRTX Remote Render");
     ImGui::Text("viewport: %i x %i", m_viewport.size.x, m_viewport.size.y);
+    if (m_renderSize.x > 0 && m_renderSize.y > 0)
+      ImGui::Text("render:   %i x %i", m_renderSize.x, m_renderSize.y);
     if (m_deviceReady)
       ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.f), "Connected");
     else
