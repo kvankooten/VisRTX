@@ -110,9 +110,12 @@ void SrtxViewport::saveSettings(tsd::core::DataNode &root)
   BaseViewport::saveSettings(root);
   root["srtx.serverUrl"] = m_serverUrl;
   root["srtx.stageUrl"] = m_stageUrl;
-  root["srtx.cameraPath"] = m_cameraPath;
+  root["srtx.renderProductPath"] = m_renderProductPath;
   root["srtx.compressionType"] = m_compressionType;
   root["srtx.showSettings"] = m_showSettings;
+  root["srtx.resolutionMode"] = static_cast<int>(m_resolutionMode);
+  root["srtx.customResolution.x"] = m_customResolution.x;
+  root["srtx.customResolution.y"] = m_customResolution.y;
 }
 
 void SrtxViewport::loadSettings(tsd::core::DataNode &root)
@@ -125,13 +128,30 @@ void SrtxViewport::loadSettings(tsd::core::DataNode &root)
       m_serverUrl = val;
     if (root["srtx.stageUrl"].getValue(ANARI_STRING, &val))
       m_stageUrl = val;
+    // Migration: the previous setting was misnamed `srtx.cameraPath`.
+    // Honor it as a fallback so existing user configs keep working.
     if (root["srtx.cameraPath"].getValue(ANARI_STRING, &val))
-      m_cameraPath = val;
+      m_renderProductPath = val;
+    if (root["srtx.renderProductPath"].getValue(ANARI_STRING, &val))
+      m_renderProductPath = val;
     if (root["srtx.compressionType"].getValue(ANARI_STRING, &val))
       m_compressionType = val;
   }
 
   root["srtx.showSettings"].getValue(ANARI_BOOL, &m_showSettings);
+
+  int storedMode = static_cast<int>(m_resolutionMode);
+  if (root["srtx.resolutionMode"].getValue(ANARI_INT32, &storedMode))
+  {
+    if (storedMode < 0
+        || storedMode > static_cast<int>(ResolutionMode::MatchViewport))
+      storedMode = static_cast<int>(ResolutionMode::UsdDefault);
+    m_resolutionMode = static_cast<ResolutionMode>(storedMode);
+  }
+  root["srtx.customResolution.x"].getValue(ANARI_INT32, &m_customResolution.x);
+  root["srtx.customResolution.y"].getValue(ANARI_INT32, &m_customResolution.y);
+  m_customResolution.x = std::max(1, m_customResolution.x);
+  m_customResolution.y = std::max(1, m_customResolution.y);
 
   if (!m_serverUrl.empty() && !m_stageUrl.empty())
   {
@@ -272,9 +292,9 @@ void SrtxViewport::applyParameters()
       m_stageUrl.c_str());
   anariSetParameter(m_device,
       m_frame,
-      "srtx::cameraPath",
+      "srtx::renderProductPath",
       ANARI_STRING,
-      m_cameraPath.c_str());
+      m_renderProductPath.c_str());
 
   if (!m_compressionType.empty())
   {
@@ -285,9 +305,16 @@ void SrtxViewport::applyParameters()
         m_compressionType.c_str());
   }
 
+  // Compute the initial desired resolution from the current ResolutionMode,
+  // then push it as the frame's "size" so the device-side resolution write
+  // happens as part of the very first commit.
+  updateDesiredResolution();
   uint32_t size[2] = {
-      (uint32_t)m_viewport.size.x, (uint32_t)m_viewport.size.y};
+      (uint32_t)std::max(0, m_desiredResolution.x),
+      (uint32_t)std::max(0, m_desiredResolution.y)};
   anariSetParameter(m_device, m_frame, "size", ANARI_UINT32_VEC2, size);
+  anariSetParameter(
+      m_device, m_frame, "srtx::changenumber", ANARI_INT32, &m_resolutionChangeNumber);
 
   anariSetParameter(
       m_device, m_frame, "channel.color", ANARI_DATA_TYPE, &ANARI_UFIXED8_RGBA_SRGB);
@@ -296,19 +323,88 @@ void SrtxViewport::applyParameters()
 
   anariCommitParameters(m_device, m_frame);
 
+  m_lastSentResolution = m_desiredResolution;
   m_paramsChanged = false;
   m_deviceReady = true;
   m_statusMessage = "Connected to " + m_serverUrl;
-  tsd::core::logStatus("SRTX parameters applied: server=%s stage=%s camera=%s",
+  tsd::core::logStatus(
+      "SRTX parameters applied: server=%s stage=%s renderProduct=%s",
       m_serverUrl.c_str(),
       m_stageUrl.c_str(),
-      m_cameraPath.c_str());
+      m_renderProductPath.c_str());
+}
+
+void SrtxViewport::updateDesiredResolution()
+{
+  switch (m_resolutionMode)
+  {
+  case ResolutionMode::UsdDefault:
+    // Tell the device to leave the server's render product alone by sending
+    // a zero size; SrtxFrame skips the write in that case.
+    m_desiredResolution = tsd::math::int2(0, 0);
+    m_pendingMatchSize = tsd::math::int2(0, 0);
+    break;
+  case ResolutionMode::Custom:
+    m_desiredResolution = tsd::math::int2(
+        std::max(1, m_customResolution.x), std::max(1, m_customResolution.y));
+    m_pendingMatchSize = tsd::math::int2(0, 0);
+    break;
+  case ResolutionMode::MatchViewport:
+  {
+    // Debounce so resizing the dock by dragging doesn't fire a write per
+    // frame; only commit a new size after the dock has been stable for the
+    // debounce interval.
+    constexpr double kMatchDebounceMs = 250.0;
+    const double nowMs = ImGui::GetTime() * 1000.0;
+    if (m_pendingMatchSize != m_viewport.size)
+    {
+      m_pendingMatchSize = m_viewport.size;
+      m_pendingMatchExpiresMs = nowMs + kMatchDebounceMs;
+    }
+    if (nowMs >= m_pendingMatchExpiresMs && m_pendingMatchSize.x > 0
+        && m_pendingMatchSize.y > 0)
+    {
+      m_desiredResolution = m_pendingMatchSize;
+    }
+    break;
+  }
+  }
+}
+
+void SrtxViewport::pushResolutionParametersIfNeeded()
+{
+  if (!m_device || !m_frame)
+    return;
+
+  updateDesiredResolution();
+
+  if (m_desiredResolution == m_lastSentResolution)
+    return;
+
+  // Bump the change number so the server treats this resize as a new scene
+  // state; SrtxFrame forwards it to USDWriteService::WriteSceneValues.
+  m_resolutionChangeNumber++;
+
+  uint32_t size[2] = {
+      (uint32_t)std::max(0, m_desiredResolution.x),
+      (uint32_t)std::max(0, m_desiredResolution.y)};
+  anariSetParameter(m_device, m_frame, "size", ANARI_UINT32_VEC2, size);
+  anariSetParameter(
+      m_device, m_frame, "srtx::changenumber", ANARI_INT32, &m_resolutionChangeNumber);
+  anariCommitParameters(m_device, m_frame);
+
+  m_lastSentResolution = m_desiredResolution;
 }
 
 void SrtxViewport::renderFrame()
 {
   if (!m_deviceReady || !m_frame)
     return;
+
+  // Resolution control: push a new server-side resolution if the active mode
+  // calls for one (Custom value changed, MatchViewport debounce expired). This
+  // re-commits the frame before kicking off the next render.
+  pushResolutionParametersIfNeeded();
 
   anariRenderFrame(m_device, m_frame);
   anariFrameReady(m_device, m_frame, ANARI_WAIT);
@@ -447,14 +543,47 @@ void SrtxViewport::ui_settingsPanel()
       m_paramsChanged = true;
     }
 
-    char cameraBuf[256] = {};
-    std::strncpy(cameraBuf, m_cameraPath.c_str(), sizeof(cameraBuf) - 1);
-    ImGui::TextUnformatted("Camera Path");
+    char productBuf[256] = {};
+    std::strncpy(productBuf, m_renderProductPath.c_str(), sizeof(productBuf) - 1);
+    ImGui::TextUnformatted("Render Product Path");
     ImGui::SetNextItemWidth(-1.f);
-    if (ImGui::InputText("##srtxCameraPath", cameraBuf, sizeof(cameraBuf)))
+    if (ImGui::InputText("##srtxProductPath", productBuf, sizeof(productBuf)))
     {
-      m_cameraPath = cameraBuf;
+      m_renderProductPath = productBuf;
       m_paramsChanged = true;
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Render Resolution");
+
+    static const char *kResolutionModeLabels[] = {
+        "USD default", "Custom", "Match viewport"};
+    int modeIndex = static_cast<int>(m_resolutionMode);
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::Combo("##srtxResolutionMode",
+            &modeIndex,
+            kResolutionModeLabels,
+            IM_ARRAYSIZE(kResolutionModeLabels)))
+    {
+      m_resolutionMode = static_cast<ResolutionMode>(modeIndex);
+    }
+
+    if (m_resolutionMode == ResolutionMode::Custom)
+    {
+      int wh[2] = {m_customResolution.x, m_customResolution.y};
+      ImGui::SetNextItemWidth(-1.f);
+      if (ImGui::DragInt2("##srtxCustomRes", wh, 1.f, 1, 16384))
+      {
+        m_customResolution = tsd::math::int2(
+            std::max(1, wh[0]), std::max(1, wh[1]));
+      }
+    }
+    else if (m_resolutionMode == ResolutionMode::MatchViewport)
+    {
+      ImGui::TextDisabled(
+          "Tracking dock area (debounced); current target: %i x %i",
+          m_pendingMatchSize.x,
+          m_pendingMatchSize.y);
     }
 
     ImGui::Separator();

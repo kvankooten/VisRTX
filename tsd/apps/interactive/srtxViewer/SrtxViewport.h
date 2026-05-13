@@ -17,6 +17,17 @@ namespace tsd_srtx {
 
 struct SrtxViewport : public tsd::ui::imgui::BaseViewport
 {
+  // How the SRTX server's render resolution is selected. UsdDefault leaves
+  // the resolution to the USD stage, Custom uses a fixed user-entered value,
+  // and MatchViewport snaps the server's resolution to the dock content area
+  // (with a short debounce so we don't spam writes during a drag).
+  enum class ResolutionMode
+  {
+    UsdDefault = 0,
+    Custom = 1,
+    MatchViewport = 2,
+  };
+
   SrtxViewport(tsd::ui::imgui::Application *app,
       tsd::rendering::Manipulator *m,
       const char *name = "SRTX Viewport");
@@ -46,6 +57,15 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   void applyParameters();
   void renderFrame();
 
+  // Recompute m_desiredResolution from the current ResolutionMode and
+  // (for MatchViewport) update the debounce state.
+  void updateDesiredResolution();
+
+  // If the desired resolution differs from what we last sent to the device,
+  // bump the resolution change number and push new size/path/changenumber
+  // parameters to the ANARI frame. Called once per renderFrame() pass.
+  void pushResolutionParametersIfNeeded();
+
   void ui_menubar();
   void ui_settingsPanel();
   void ui_overlay();
@@ -53,10 +73,24 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   // Configuration
   std::string m_serverUrl;
   std::string m_stageUrl;
-  std::string m_cameraPath{"/Render/Camera"};
+  // RenderProduct prim path; the SRTX server resolves the bound camera and
+  // render settings from this product.
+  std::string m_renderProductPath{"/Render/Product"};
   std::string m_compressionType;
   bool m_showOverlay{true};
   bool m_showSettings{true};
+
+  // Resolution control: which mode is active, the user's manual choice for
+  // Custom mode, the size we last actually sent to the device (debounced
+  // against rapid dock changes), and the change-number counter we increment
+  // on every push so the server treats each resize as a new scene state.
+  ResolutionMode m_resolutionMode{ResolutionMode::UsdDefault};
+  tsd::math::int2 m_customResolution{1920, 1080};
+  tsd::math::int2 m_desiredResolution{0, 0};
+  tsd::math::int2 m_lastSentResolution{0, 0};
+  tsd::math::int2 m_pendingMatchSize{0, 0};
+  double m_pendingMatchExpiresMs{0.0};
+  int m_resolutionChangeNumber{0};
 
   // Connection state
   bool m_deviceReady{false};
