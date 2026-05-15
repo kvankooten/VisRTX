@@ -128,10 +128,6 @@ void SrtxViewport::loadSettings(tsd::core::DataNode &root)
       m_serverUrl = val;
     if (root["srtx.stageUrl"].getValue(ANARI_STRING, &val))
       m_stageUrl = val;
-    // Migration: the previous setting was misnamed `srtx.cameraPath`.
-    // Honor it as a fallback so existing user configs keep working.
-    if (root["srtx.cameraPath"].getValue(ANARI_STRING, &val))
-      m_renderProductPath = val;
     if (root["srtx.renderProductPath"].getValue(ANARI_STRING, &val))
       m_renderProductPath = val;
     if (root["srtx.compressionType"].getValue(ANARI_STRING, &val))
