@@ -3,6 +3,7 @@
 
 project(tsdSrtxViewer)
 project_add_executable(
+  SrtxControlPanel.cpp
   SrtxViewport.cpp
   tsdSrtxViewer.cpp
 )

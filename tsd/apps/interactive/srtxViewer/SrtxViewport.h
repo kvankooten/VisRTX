@@ -35,6 +35,55 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
 
   void buildUI() override;
 
+  /////////////////////////////////////////////////////////////////////////////
+  // Public surface used by SrtxControlPanel to drive the device. The viewport
+  // remains the owner of the ANARI library/device/renderer/frame and of all
+  // SRTX-related settings; the panel only forwards user edits and reads
+  // status. Any setter that changes a value that needs to be re-sent to the
+  // device also marks the parameter state dirty so the next connect() will
+  // re-commit. Resolution-mode changes that take effect mid-stream are picked
+  // up by pushResolutionParametersIfNeeded() in the existing render path.
+
+  // Connection settings (mirrors of the saved DataNode keys).
+  const std::string &serverUrl() const { return m_serverUrl; }
+  void setServerUrl(std::string value);
+  const std::string &stageUrl() const { return m_stageUrl; }
+  void setStageUrl(std::string value);
+  const std::string &renderProductPath() const { return m_renderProductPath; }
+  void setRenderProductPath(std::string value);
+  const std::string &compressionType() const { return m_compressionType; }
+  void setCompressionType(std::string value);
+
+  // Resolution mode + Custom-mode value. Reading m_pendingMatchSize from the
+  // panel is helpful for the MatchViewport tooltip.
+  ResolutionMode resolutionMode() const { return m_resolutionMode; }
+  void setResolutionMode(ResolutionMode mode);
+  tsd::math::int2 customResolution() const { return m_customResolution; }
+  void setCustomResolution(tsd::math::int2 value);
+  tsd::math::int2 pendingMatchSize() const { return m_pendingMatchSize; }
+
+  // Device-control verbs. connect() also handles first-time device setup.
+  void connect();
+  void disconnect();
+  bool isConnected() const { return m_deviceReady; }
+  bool canConnect() const
+  {
+    return !m_serverUrl.empty() && !m_stageUrl.empty() && m_paramsChanged;
+  }
+
+  // Frame capture trigger + last-frame info for the panel's "Save Frame"
+  // button + label.
+  void requestSaveFrame() { m_saveNextFrame = true; }
+  bool hasRenderedFrame() const
+  {
+    return m_lastFrameWidth > 0 && m_lastFrameHeight > 0;
+  }
+  uint32_t lastFrameWidth() const { return m_lastFrameWidth; }
+  uint32_t lastFrameHeight() const { return m_lastFrameHeight; }
+
+  const std::string &statusMessage() const { return m_statusMessage; }
+  /////////////////////////////////////////////////////////////////////////////
+
  private:
   void saveSettings(tsd::core::DataNode &thisWindowRoot) override;
   void loadSettings(tsd::core::DataNode &thisWindowRoot) override;
@@ -67,7 +116,6 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   void pushResolutionParametersIfNeeded();
 
   void ui_menubar();
-  void ui_settingsPanel();
   void ui_overlay();
 
   // Configuration
@@ -78,7 +126,6 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   std::string m_renderProductPath{"/Render/Product"};
   std::string m_compressionType;
   bool m_showOverlay{true};
-  bool m_showSettings{true};
 
   // Resolution control: which mode is active, the user's manual choice for
   // Custom mode, the size we last actually sent to the device (debounced

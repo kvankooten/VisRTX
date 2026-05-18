@@ -13,6 +13,7 @@
 #include <tsd/ui/imgui/windows/Timeline.h>
 #include <tsd/ui/imgui/windows/Viewport.h>
 // local
+#include "SrtxControlPanel.h"
 #include "SrtxViewport.h"
 // std
 #include <chrono>
@@ -40,6 +41,8 @@ class Application : public TSDApplication
     // SRTX remote viewport
     auto *srtxViewport =
         new tsd_srtx::SrtxViewport(this, &core->view.manipulator);
+    // Dockable control panel that drives the SRTX viewport's device + settings
+    auto *srtxControl = new tsd_srtx::SrtxControlPanel(this, srtxViewport);
 
     auto *animations = new tsd_ui::Animations(this);
     auto *timeline = new tsd_ui::Timeline(this);
@@ -50,6 +53,7 @@ class Application : public TSDApplication
 
     windows.emplace_back(viewport);
     windows.emplace_back(srtxViewport);
+    windows.emplace_back(srtxControl);
     windows.emplace_back(animations);
     windows.emplace_back(timeline);
     windows.emplace_back(dbeditor);
@@ -132,6 +136,12 @@ Pos=0,576
 Size=547,504
 Collapsed=0
 DockId=0x00000009,1
+
+[Window][SRTX Control]
+Pos=0,576
+Size=547,504
+Collapsed=0
+DockId=0x00000009,2
 
 [Window][Animations]
 Pos=0,26

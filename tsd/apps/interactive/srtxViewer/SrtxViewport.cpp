@@ -12,6 +12,7 @@
 // std
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 static void srtxStatusFunc(const void * /*userData*/,
     ANARIDevice /*device*/,
@@ -58,9 +59,6 @@ void SrtxViewport::buildUI()
     imagePipeline_setup();
     m_clearPass->setClearColor(tsd::math::float4(0.1f, 0.1f, 0.1f, 1.f));
   }
-
-  if (m_showSettings)
-    ui_settingsPanel();
 
   if (m_deviceReady)
   {
@@ -112,7 +110,6 @@ void SrtxViewport::saveSettings(tsd::core::DataNode &root)
   root["srtx.stageUrl"] = m_stageUrl;
   root["srtx.renderProductPath"] = m_renderProductPath;
   root["srtx.compressionType"] = m_compressionType;
-  root["srtx.showSettings"] = m_showSettings;
   root["srtx.resolutionMode"] = static_cast<int>(m_resolutionMode);
   root["srtx.customResolution.x"] = m_customResolution.x;
   root["srtx.customResolution.y"] = m_customResolution.y;
@@ -133,8 +130,6 @@ void SrtxViewport::loadSettings(tsd::core::DataNode &root)
     if (root["srtx.compressionType"].getValue(ANARI_STRING, &val))
       m_compressionType = val;
   }
-
-  root["srtx.showSettings"].getValue(ANARI_BOOL, &m_showSettings);
 
   int storedMode = static_cast<int>(m_resolutionMode);
   if (root["srtx.resolutionMode"].getValue(ANARI_INT32, &storedMode))
@@ -474,7 +469,6 @@ void SrtxViewport::ui_menubar()
   {
     if (ImGui::BeginMenu("SRTX"))
     {
-      ImGui::Checkbox("Show Settings Panel", &m_showSettings);
       ImGui::Checkbox("Show Info Overlay", &m_showOverlay);
 
       ImGui::Separator();
@@ -492,141 +486,65 @@ void SrtxViewport::ui_menubar()
   }
 }
 
-void SrtxViewport::ui_settingsPanel()
+void SrtxViewport::setServerUrl(std::string value)
 {
-  // Wide enough for long URLs; fields use full child width (label above input).
-  const float maxPanelWidth = 560.f;
-  const float padding = 8.f;
-  float availW = ImGui::GetContentRegionAvail().x - padding;
-  float panelWidth = std::min(maxPanelWidth, std::max(280.f, availW));
-  ImVec2 contentStart = ImGui::GetCursorStartPos();
-  float menuBarHeight = ImGui::GetFrameHeight();
+  if (value == m_serverUrl)
+    return;
+  m_serverUrl = std::move(value);
+  m_paramsChanged = true;
+}
 
-  ImGui::SetCursorPos(
-      ImVec2(contentStart.x + 4.f, contentStart.y + menuBarHeight + 4.f));
+void SrtxViewport::setStageUrl(std::string value)
+{
+  if (value == m_stageUrl)
+    return;
+  m_stageUrl = std::move(value);
+  m_paramsChanged = true;
+}
 
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.15f, 0.9f));
+void SrtxViewport::setRenderProductPath(std::string value)
+{
+  if (value == m_renderProductPath)
+    return;
+  m_renderProductPath = std::move(value);
+  m_paramsChanged = true;
+}
 
-  ImGuiChildFlags childFlags =
-      ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY;
-  ImGuiWindowFlags childWindowFlags = ImGuiWindowFlags_NoScrollbar;
+void SrtxViewport::setCompressionType(std::string value)
+{
+  if (value == m_compressionType)
+    return;
+  m_compressionType = std::move(value);
+  m_paramsChanged = true;
+}
 
-  if (ImGui::BeginChild("##srtxSettings",
-          ImVec2(panelWidth, 0),
-          childFlags,
-          childWindowFlags))
-  {
-    ImGui::Text("SRTX Connection Settings");
-    ImGui::Separator();
+void SrtxViewport::setResolutionMode(ResolutionMode mode)
+{
+  if (mode == m_resolutionMode)
+    return;
+  m_resolutionMode = mode;
+  // ResolutionMode changes are picked up by pushResolutionParametersIfNeeded()
+  // on the next renderFrame() pass without needing a full reconnect, so the
+  // paramsChanged flag intentionally stays as-is here.
+}
 
-    char serverBuf[256] = {};
-    std::strncpy(serverBuf, m_serverUrl.c_str(), sizeof(serverBuf) - 1);
-    ImGui::TextUnformatted("Server URL");
-    ImGui::SetNextItemWidth(-1.f);
-    if (ImGui::InputText("##srtxServerUrl", serverBuf, sizeof(serverBuf)))
-    {
-      m_serverUrl = serverBuf;
-      m_paramsChanged = true;
-    }
+void SrtxViewport::setCustomResolution(tsd::math::int2 value)
+{
+  value.x = std::max(1, value.x);
+  value.y = std::max(1, value.y);
+  m_customResolution = value;
+}
 
-    char stageBuf[512] = {};
-    std::strncpy(stageBuf, m_stageUrl.c_str(), sizeof(stageBuf) - 1);
-    ImGui::TextUnformatted("Stage URL");
-    ImGui::SetNextItemWidth(-1.f);
-    if (ImGui::InputText("##srtxStageUrl", stageBuf, sizeof(stageBuf)))
-    {
-      m_stageUrl = stageBuf;
-      m_paramsChanged = true;
-    }
+void SrtxViewport::connect()
+{
+  if (!m_device)
+    setupDevice();
+  applyParameters();
+}
 
-    char productBuf[256] = {};
-    std::strncpy(productBuf, m_renderProductPath.c_str(), sizeof(productBuf) - 1);
-    ImGui::TextUnformatted("Render Product Path");
-    ImGui::SetNextItemWidth(-1.f);
-    if (ImGui::InputText("##srtxProductPath", productBuf, sizeof(productBuf)))
-    {
-      m_renderProductPath = productBuf;
-      m_paramsChanged = true;
-    }
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Render Resolution");
-
-    static const char *kResolutionModeLabels[] = {
-        "USD default", "Custom", "Match viewport"};
-    int modeIndex = static_cast<int>(m_resolutionMode);
-    ImGui::SetNextItemWidth(-1.f);
-    if (ImGui::Combo("##srtxResolutionMode",
-            &modeIndex,
-            kResolutionModeLabels,
-            IM_ARRAYSIZE(kResolutionModeLabels)))
-    {
-      m_resolutionMode = static_cast<ResolutionMode>(modeIndex);
-    }
-
-    if (m_resolutionMode == ResolutionMode::Custom)
-    {
-      int wh[2] = {m_customResolution.x, m_customResolution.y};
-      ImGui::SetNextItemWidth(-1.f);
-      if (ImGui::DragInt2("##srtxCustomRes", wh, 1.f, 1, 16384))
-      {
-        m_customResolution = tsd::math::int2(
-            std::max(1, wh[0]), std::max(1, wh[1]));
-      }
-    }
-    else if (m_resolutionMode == ResolutionMode::MatchViewport)
-    {
-      ImGui::TextDisabled(
-          "Tracking dock area (debounced); current target: %i x %i",
-          m_pendingMatchSize.x,
-          m_pendingMatchSize.y);
-    }
-
-    ImGui::Separator();
-
-    bool canConnect =
-        !m_serverUrl.empty() && !m_stageUrl.empty() && m_paramsChanged;
-
-    ImGui::BeginDisabled(!canConnect);
-    if (ImGui::Button("Connect & Render"))
-    {
-      if (!m_device)
-        setupDevice();
-      applyParameters();
-    }
-    ImGui::EndDisabled();
-
-    ImGui::SameLine();
-
-    ImGui::BeginDisabled(!m_deviceReady);
-    if (ImGui::Button("Disconnect"))
-      teardownDevice();
-    ImGui::EndDisabled();
-
-    ImGui::Separator();
-
-    ImGui::BeginDisabled(
-        !m_deviceReady || m_lastFrameWidth == 0 || m_lastFrameHeight == 0);
-    if (ImGui::Button("Save Frame as PNG"))
-      m_saveNextFrame = true;
-    ImGui::EndDisabled();
-
-    if (m_lastFrameWidth > 0 && m_lastFrameHeight > 0)
-    {
-      ImGui::SameLine();
-      ImGui::TextDisabled(
-          "(%u x %u)", m_lastFrameWidth, m_lastFrameHeight);
-    }
-
-    if (!m_statusMessage.empty())
-    {
-      ImGui::Separator();
-      ImGui::TextWrapped("%s", m_statusMessage.c_str());
-    }
-  }
-  ImGui::EndChild();
-
-  ImGui::PopStyleColor();
+void SrtxViewport::disconnect()
+{
+  teardownDevice();
 }
 
 void SrtxViewport::ui_overlay()
