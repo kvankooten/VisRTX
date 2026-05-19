@@ -32,6 +32,8 @@ void SrtxControlPanel::buildUI()
   ImGui::Separator();
   ui_resolution();
   ImGui::Separator();
+  ui_camera();
+  ImGui::Separator();
   ui_controls();
   ImGui::Separator();
   ui_frameCapture();
@@ -130,6 +132,53 @@ void SrtxControlPanel::ui_resolution()
   default:
     ImGui::TextDisabled("Using the resolution defined in the USD stage.");
     break;
+  }
+
+  ImGui::Unindent();
+}
+
+void SrtxControlPanel::ui_camera()
+{
+  ImGui::Text("Camera Navigation");
+  ImGui::Indent();
+
+  char camBuf[256] = {};
+  std::strncpy(camBuf, m_viewport->cameraPath().c_str(), sizeof(camBuf) - 1);
+  if (ImGui::InputText("Camera Path", camBuf, sizeof(camBuf)))
+    m_viewport->setCameraPath(camBuf);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+  {
+    ImGui::SetTooltip(
+        "USD prim path of the camera fly-through navigation drives.\n"
+        "Leave empty to use the camera defined in the USD stage.\n"
+        "Hold the right mouse button over the viewport to fly:\n"
+        "  mouse  - look around\n"
+        "  W/A/S/D - move (forward/left/back/right)\n"
+        "  E/Q     - move up/down (along world Y)\n"
+        "  Shift   - boost, Ctrl - slow");
+  }
+
+  float speed = m_viewport->flySpeed();
+  if (ImGui::DragFloat(
+          "Fly Speed", &speed, 0.05f, 0.f, 1000.f, "%.2f units/s"))
+    m_viewport->setFlySpeed(speed);
+
+  float sens = m_viewport->lookSensitivity();
+  if (ImGui::DragFloat(
+          "Look Sensitivity", &sens, 0.0005f, 0.f, 0.1f, "%.4f rad/px"))
+    m_viewport->setLookSensitivity(sens);
+
+  ImGui::BeginDisabled(
+      m_viewport->cameraPath().empty() || !m_viewport->isConnected());
+  if (ImGui::Button("Apply Camera Path"))
+    m_viewport->applyCameraPath();
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+  {
+    ImGui::SetTooltip(
+        "Re-read the worldMatrix of the configured camera path and use that\n"
+        "as the starting pose for further navigation. Use this after editing\n"
+        "the camera-path text field to rebind the manipulator to that prim.");
   }
 
   ImGui::Unindent();

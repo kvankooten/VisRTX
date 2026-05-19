@@ -54,6 +54,28 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   const std::string &compressionType() const { return m_compressionType; }
   void setCompressionType(std::string value);
 
+  // Path of the USD camera that fly-through navigation drives. Leave empty
+  // to leave the USD-defined camera pose untouched (fly mode is then a
+  // no-op even if the user presses the navigation keys).
+  const std::string &cameraPath() const { return m_cameraPath; }
+  void setCameraPath(std::string value);
+  // Movement speed of the fly-cam in world units per second. Mouse-look
+  // sensitivity (radians per pixel) is exposed similarly so the user can
+  // tune both from the control panel.
+  float flySpeed() const { return m_flySpeed; }
+  void setFlySpeed(float value);
+  float lookSensitivity() const { return m_lookSensitivity; }
+  void setLookSensitivity(float value);
+
+  // Re-seed the local fly-cam pose from the worldMatrix authored on the
+  // currently configured camera path. Equivalent to "rebind the manipulator
+  // to this prim and start from where it currently sits". Forces the read
+  // even when the user has already engaged navigation, so it can be used as
+  // a UI verb after the user has typed a new camera path. Does not push
+  // anything to the server on its own; the very next render with the user
+  // navigating that prim will commit the next pose.
+  void applyCameraPath();
+
   // Resolution mode + Custom-mode value. Reading m_pendingMatchSize from the
   // panel is helpful for the MatchViewport tooltip.
   ResolutionMode resolutionMode() const { return m_resolutionMode; }
@@ -68,7 +90,15 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   bool isConnected() const { return m_deviceReady; }
   bool canConnect() const
   {
-    return !m_serverUrl.empty() && !m_stageUrl.empty() && m_paramsChanged;
+    // Enabled when we have the bare-minimum URLs *and* either the device is
+    // not connected yet (so Connect performs the initial setup), or the user
+    // has changed at least one parameter since the last successful connect
+    // (so Connect applies the change). This keeps the button active right
+    // after disconnect() without requiring a placebo edit in some text
+    // field.
+    if (m_serverUrl.empty() || m_stageUrl.empty())
+      return false;
+    return !m_deviceReady || m_paramsChanged;
   }
 
   // Frame capture trigger + last-frame info for the panel's "Save Frame"
@@ -115,6 +145,28 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   // parameters to the ANARI frame. Called once per renderFrame() pass.
   void pushResolutionParametersIfNeeded();
 
+  // Fly-through navigation. handleFlyInput() reads mouse/keyboard while the
+  // right mouse button is held and updates m_camPosition/m_camYawPitch.
+  // pushCameraTransformIfNeeded() bumps the scene change-number and pushes
+  // a fresh srtx::cameraTransform / srtx::cameraPath pair when the local
+  // pose has drifted from what was last sent to the device. Both are called
+  // once per renderFrame() pass.
+  void handleFlyInput();
+  void pushCameraTransformIfNeeded();
+
+  // Ask the device for the camera prim's current worldMatrix and use it to
+  // seed m_camPosition / m_camYawPitch so the first fly-through input starts
+  // from the USD-authored pose instead of from the hard-coded default. Best-
+  // effort: returns true on success, false on any failure (no client, empty
+  // path, server query error, non-orthonormal matrix, etc.) leaving the
+  // existing local state alone in the false case.
+  //
+  // The first attempt right after connect() typically fails because the
+  // server has not yet established a change-number for the new stream; the
+  // viewport works around this by setting m_seedPending and retrying once
+  // per renderFrame() until it succeeds or the attempt budget is exhausted.
+  bool seedCameraFromUsd();
+
   void ui_menubar();
   void ui_overlay();
 
@@ -125,7 +177,40 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   // render settings from this product.
   std::string m_renderProductPath{"/Render/Product"};
   std::string m_compressionType;
+  // Path of the USD camera prim driven by the fly-through navigation. When
+  // empty, all camera-related updates are skipped and the USD-defined pose
+  // is left untouched.
+  std::string m_cameraPath;
   bool m_showOverlay{true};
+
+  // Fly-through navigation state. m_camPosition is the camera's world-space
+  // location; m_camYawPitch is rotation about world +Y (yaw) and the camera's
+  // local +X (pitch). pitch is clamped to (-pi/2, pi/2). m_cameraDirty tracks
+  // whether the local pose has changed since the last successful push; it is
+  // also set by resetCamera() so a single push will commit on the next frame.
+  tsd::math::float3 m_camPosition{0.f, 0.f, 5.f};
+  tsd::math::float2 m_camYawPitch{0.f, 0.f};
+  bool m_cameraDirty{false};
+  // True once the user has actually engaged fly-through navigation. Until
+  // this flips, connect()/reconnect() leaves the USD-defined camera pose
+  // alone instead of overwriting it with the local default pose that
+  // m_camPosition / m_camYawPitch are initialized to above.
+  bool m_hasUserPose{false};
+  // Deferred-seed bookkeeping. The first ReadSceneValues right after connect
+  // typically fails because the server has not assigned a change-number to
+  // the new stream yet; renderFrame() retries while m_seedPending is set,
+  // decrementing m_seedAttemptsRemaining each try so we eventually give up
+  // instead of spamming gRPC + the log on every frame.
+  bool m_seedPending{false};
+  int m_seedAttemptsRemaining{0};
+  // Last frame's RMB-held state and mouse position; used to detect the press
+  // event so we capture the cursor at the right moment, and to compute the
+  // delta on subsequent frames.
+  bool m_flyActive{false};
+  tsd::math::float2 m_flyPrevMouse{0.f, 0.f};
+  // Navigation tuning surfaced in the panel.
+  float m_flySpeed{1.f};      // world units / second when WASD is held
+  float m_lookSensitivity{0.005f}; // radians per pixel
 
   // Resolution control: which mode is active, the user's manual choice for
   // Custom mode, the size we last actually sent to the device (debounced

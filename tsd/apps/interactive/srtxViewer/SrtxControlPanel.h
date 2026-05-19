@@ -28,6 +28,7 @@ struct SrtxControlPanel : public tsd::ui::imgui::Window
  private:
   void ui_connectionSettings();
   void ui_resolution();
+  void ui_camera();
   void ui_controls();
   void ui_frameCapture();
   void ui_status();

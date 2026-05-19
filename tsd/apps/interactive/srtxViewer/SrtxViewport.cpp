@@ -11,8 +11,48 @@
 #include "stb_image_write.h"
 // std
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <utility>
+
+namespace {
+
+// Compute the column-major 4x4 camera-local-to-world transform from a
+// position + (yaw, pitch) pair. Convention: yaw rotates around world +Y
+// (positive turns the view left), pitch is around the camera's local +X.
+// At yaw = pitch = 0 the camera faces -Z, right = +X, up = +Y, matching
+// the OpenGL/USD camera convention. The returned matrix is laid out in
+// column-major order so it can be passed directly via
+// anariSetParameter(..., ANARI_FLOAT32_MAT4, m).
+void buildCameraTransform(const tsd::math::float3 &pos,
+    const tsd::math::float2 &yawPitch,
+    float out[16])
+{
+  const float yaw = yawPitch.x;
+  const float pitch = yawPitch.y;
+  const float cy = std::cos(yaw);
+  const float sy = std::sin(yaw);
+  const float cp = std::cos(pitch);
+  const float sp = std::sin(pitch);
+
+  // Forward (the direction the camera looks at) in world coords.
+  const tsd::math::float3 forward(-sy * cp, sp, -cy * cp);
+  // Right hand vector with no roll: perpendicular to forward, lying in the
+  // y = 0 plane in camera-local space, mapped to world.
+  const tsd::math::float3 right(cy, 0.f, -sy);
+  // Up = right x (-forward), giving (right, up, -forward) as an orthonormal
+  // right-handed basis matching the OpenGL/USD camera convention.
+  const tsd::math::float3 up = cross(right, forward);
+
+  // Column-major storage: column c starts at out[c * 4]. Columns are
+  // (right, up, -forward, position); the last row is (0, 0, 0, 1).
+  out[0]  = right.x;   out[1]  = right.y;   out[2]  = right.z;   out[3]  = 0.f;
+  out[4]  = up.x;      out[5]  = up.y;      out[6]  = up.z;      out[7]  = 0.f;
+  out[8]  = -forward.x;out[9]  = -forward.y;out[10] = -forward.z;out[11] = 0.f;
+  out[12] = pos.x;     out[13] = pos.y;     out[14] = pos.z;     out[15] = 1.f;
+}
+
+} // namespace
 
 static void srtxStatusFunc(const void * /*userData*/,
     ANARIDevice /*device*/,
@@ -110,6 +150,9 @@ void SrtxViewport::saveSettings(tsd::core::DataNode &root)
   root["srtx.stageUrl"] = m_stageUrl;
   root["srtx.renderProductPath"] = m_renderProductPath;
   root["srtx.compressionType"] = m_compressionType;
+  root["srtx.cameraPath"] = m_cameraPath;
+  root["srtx.flySpeed"] = m_flySpeed;
+  root["srtx.lookSensitivity"] = m_lookSensitivity;
   root["srtx.resolutionMode"] = static_cast<int>(m_resolutionMode);
   root["srtx.customResolution.x"] = m_customResolution.x;
   root["srtx.customResolution.y"] = m_customResolution.y;
@@ -129,7 +172,14 @@ void SrtxViewport::loadSettings(tsd::core::DataNode &root)
       m_renderProductPath = val;
     if (root["srtx.compressionType"].getValue(ANARI_STRING, &val))
       m_compressionType = val;
+    if (root["srtx.cameraPath"].getValue(ANARI_STRING, &val))
+      m_cameraPath = val;
   }
+
+  root["srtx.flySpeed"].getValue(ANARI_FLOAT32, &m_flySpeed);
+  root["srtx.lookSensitivity"].getValue(ANARI_FLOAT32, &m_lookSensitivity);
+  m_flySpeed = std::max(0.f, m_flySpeed);
+  m_lookSensitivity = std::max(0.f, m_lookSensitivity);
 
   int storedMode = static_cast<int>(m_resolutionMode);
   if (root["srtx.resolutionMode"].getValue(ANARI_INT32, &storedMode))
@@ -296,6 +346,18 @@ void SrtxViewport::applyParameters()
         m_compressionType.c_str());
   }
 
+  // Camera-path is committed once on connect; the actual transform is only
+  // pushed once the user navigates (or hits "Reset camera"), via
+  // pushCameraTransformIfNeeded() from the per-frame path.
+  if (!m_cameraPath.empty())
+  {
+    anariSetParameter(m_device,
+        m_frame,
+        "srtx::cameraPath",
+        ANARI_STRING,
+        m_cameraPath.c_str());
+  }
+
   // Compute the initial desired resolution from the current ResolutionMode,
   // then push it as the frame's "size" so the device-side resolution write
   // happens as part of the very first commit.
@@ -387,15 +449,251 @@ void SrtxViewport::pushResolutionParametersIfNeeded()
   m_lastSentResolution = m_desiredResolution;
 }
 
+void SrtxViewport::handleFlyInput()
+{
+  // Fly mode is press-and-hold on the right mouse button. While inactive,
+  // we deliberately ignore keyboard so WASD/QE never collide with global
+  // shortcuts (the gizmo bindings on W/E/R/Q in BaseViewport hover-check
+  // before consuming, which is compatible with the SRTX viewport even when
+  // the SRTX dock node is the focused window).
+  const bool rmb = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+  const bool hovered = ImGui::IsWindowHovered();
+
+  if (!m_flyActive)
+  {
+    if (rmb && hovered)
+    {
+      m_flyActive = true;
+      const ImVec2 mp = ImGui::GetIO().MousePos;
+      m_flyPrevMouse = tsd::math::float2(mp.x, mp.y);
+    }
+    return;
+  }
+
+  // We were active last frame. Stop on release, regardless of hover, so the
+  // pose doesn't drift if the cursor wanders off the dock during a drag.
+  if (!rmb)
+  {
+    m_flyActive = false;
+    return;
+  }
+
+  ImGuiIO &io = ImGui::GetIO();
+  const tsd::math::float2 mouse(io.MousePos.x, io.MousePos.y);
+  const tsd::math::float2 delta = mouse - m_flyPrevMouse;
+  m_flyPrevMouse = mouse;
+
+  if (m_cameraPath.empty())
+    return; // Without a target prim there is nothing to drive; ignore input.
+
+  // ----- DEBUG GUARD: per-frame motion caps ---------------------------------
+  // While the SRTX pipeline is rendering at < 1 FPS, ImGui delivers the
+  // entire accumulated input delta of the previous render interval as a
+  // single tick. Without bounds, a ~1 s mouse swipe can rotate the camera
+  // multiple full turns and walk it out of the scene in one commit. Cap
+  // both the angular delta and the translation step so we can observe
+  // whether the wire-up is correct independent of render performance.
+  //
+  // Remove or relax these once the pipeline runs at interactive rates.
+  constexpr float kMaxYawDeltaPerFrame = 0.26179938f;   // ~15 deg
+  constexpr float kMaxPitchDeltaPerFrame = 0.26179938f; // ~15 deg
+  constexpr float kMaxTranslationDt = 0.05f;            // == 1/20 s
+  // --------------------------------------------------------------------------
+
+  // Mouse-look. Positive horizontal mouse delta turns the view right (yaw
+  // decreases under the right-handed convention used by buildCameraTransform).
+  // Vertical delta is inverted so pulling the mouse down tilts the view up,
+  // matching the typical first-person feel.
+  if (delta.x != 0.f || delta.y != 0.f)
+  {
+    float dYaw = -delta.x * m_lookSensitivity;
+    float dPitch = -delta.y * m_lookSensitivity;
+    dYaw = std::clamp(dYaw, -kMaxYawDeltaPerFrame, kMaxYawDeltaPerFrame);
+    dPitch = std::clamp(dPitch, -kMaxPitchDeltaPerFrame, kMaxPitchDeltaPerFrame);
+    m_camYawPitch.x += dYaw;
+    m_camYawPitch.y += dPitch;
+    constexpr float kPitchLimit = 1.553343f; // ~89 deg in radians
+    m_camYawPitch.y = std::clamp(m_camYawPitch.y, -kPitchLimit, kPitchLimit);
+    m_cameraDirty = true;
+    m_hasUserPose = true;
+  }
+
+  // WASD + QE movement. dt comes from ImGui so it tracks framerate even
+  // when the SRTX render pipeline runs at a different cadence -- but we cap
+  // the effective dt (debug guard above) so the per-frame step stays small
+  // at very low framerates.
+  float dt = io.DeltaTime;
+  if (dt <= 0.f || m_flySpeed <= 0.f)
+    return;
+  dt = std::min(dt, kMaxTranslationDt);
+
+  const float yaw = m_camYawPitch.x;
+  const float pitch = m_camYawPitch.y;
+  const float cy = std::cos(yaw);
+  const float sy = std::sin(yaw);
+  const float cp = std::cos(pitch);
+  const float sp = std::sin(pitch);
+  const tsd::math::float3 forward(-sy * cp, sp, -cy * cp);
+  const tsd::math::float3 right(cy, 0.f, -sy);
+  const tsd::math::float3 worldUp(0.f, 1.f, 0.f);
+
+  // Boost: shift accelerates; ctrl decelerates. Both stack with m_flySpeed.
+  float scale = m_flySpeed * dt;
+  if (ImGui::IsKeyDown(ImGuiKey_LeftShift))
+    scale *= 4.f;
+  if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl))
+    scale *= 0.25f;
+
+  tsd::math::float3 step(0.f, 0.f, 0.f);
+  if (ImGui::IsKeyDown(ImGuiKey_W))
+    step += forward;
+  if (ImGui::IsKeyDown(ImGuiKey_S))
+    step -= forward;
+  if (ImGui::IsKeyDown(ImGuiKey_D))
+    step += right;
+  if (ImGui::IsKeyDown(ImGuiKey_A))
+    step -= right;
+  if (ImGui::IsKeyDown(ImGuiKey_E))
+    step += worldUp;
+  if (ImGui::IsKeyDown(ImGuiKey_Q))
+    step -= worldUp;
+
+  if (step.x != 0.f || step.y != 0.f || step.z != 0.f)
+  {
+    m_camPosition += step * scale;
+    m_cameraDirty = true;
+    m_hasUserPose = true;
+  }
+}
+
+bool SrtxViewport::seedCameraFromUsd()
+{
+  // Best-effort one-shot read of the camera's existing worldMatrix from the
+  // server. The result is used purely to initialize our local fly-cam pose
+  // so the first navigation input is relative to the USD-authored camera
+  // rather than to our default starting pose. We deliberately do NOT mark
+  // m_cameraDirty or set m_hasUserPose here: regardless of whether seeding
+  // succeeds, the USD-defined pose remains in effect on the server until
+  // the user actually navigates.
+  if (!m_device || !m_frame)
+    return false;
+  if (m_cameraPath.empty())
+    return false;
+  if (m_hasUserPose)
+    return false; // User already has a meaningful local pose; do not stomp it.
+
+  // The device reads srtx::cameraWorldMatrix relative to its currently
+  // committed srtx::cameraPath. Push the viewport's latest m_cameraPath
+  // (which may have just been edited via the text field) and commit so the
+  // query targets the right prim, not whatever was committed at connect time
+  // / by the last transform push.
+  anariSetParameter(m_device,
+      m_frame,
+      "srtx::cameraPath",
+      ANARI_STRING,
+      m_cameraPath.c_str());
+  anariCommitParameters(m_device, m_frame);
+
+  float worldMatrix[16] = {};
+  if (!anariGetProperty(m_device,
+          m_frame,
+          "srtx::cameraWorldMatrix",
+          ANARI_FLOAT32_MAT4,
+          worldMatrix,
+          sizeof(worldMatrix),
+          ANARI_WAIT))
+  {
+    // No matrix available. Caller decides whether to log / retry; we keep
+    // this path silent so the renderFrame() retry loop can drive the seed
+    // without spamming the status line on every attempt.
+    return false;
+  }
+
+  // ANARI mat4 is column-major: column c starts at index c * 4. Position is
+  // column 3 (translation), camera basis is (right, up, -forward) in columns
+  // 0..2. Recover yaw/pitch from -forward (which our buildCameraTransform()
+  // writes into column 2). Reject obviously non-orthonormal results (e.g.
+  // mirrored or zero-scaled matrices) by checking the forward column's
+  // length; we cannot represent those with (yaw, pitch) anyway.
+  const tsd::math::float3 position(
+      worldMatrix[12], worldMatrix[13], worldMatrix[14]);
+  const tsd::math::float3 negForward(
+      worldMatrix[8], worldMatrix[9], worldMatrix[10]);
+  const float fLen = std::sqrt(negForward.x * negForward.x
+      + negForward.y * negForward.y + negForward.z * negForward.z);
+  if (fLen < 1e-6f)
+    return false;
+  const tsd::math::float3 forward(
+      -negForward.x / fLen, -negForward.y / fLen, -negForward.z / fLen);
+
+  // Inverse of buildCameraTransform()'s forward = (-sy*cp, sp, -cy*cp):
+  //   pitch = asin(forward.y)
+  //   yaw   = atan2(-forward.x, -forward.z)
+  // Both well-defined because |forward| == 1 and pitch lies in (-pi/2, pi/2).
+  const float pitch = std::asin(std::clamp(forward.y, -1.f, 1.f));
+  const float yaw = std::atan2(-forward.x, -forward.z);
+
+  m_camPosition = position;
+  m_camYawPitch = tsd::math::float2(yaw, pitch);
+
+  m_statusMessage = "Seeded fly-cam from '" + m_cameraPath + "'";
+  tsd::core::logStatus(
+      "SRTX seeded fly-cam from '%s': pos=(%.3f, %.3f, %.3f) yaw=%.3f pitch=%.3f",
+      m_cameraPath.c_str(),
+      position.x,
+      position.y,
+      position.z,
+      yaw,
+      pitch);
+  return true;
+}
+
+void SrtxViewport::pushCameraTransformIfNeeded()
+{
+  if (!m_device || !m_frame)
+    return;
+  if (m_cameraPath.empty())
+    return;
+  if (!m_cameraDirty)
+    return;
+
+  m_resolutionChangeNumber++;
+
+  float transform[16];
+  buildCameraTransform(m_camPosition, m_camYawPitch, transform);
+  anariSetParameter(
+      m_device, m_frame, "srtx::cameraPath", ANARI_STRING, m_cameraPath.c_str());
+  anariSetParameter(
+      m_device, m_frame, "srtx::cameraTransform", ANARI_FLOAT32_MAT4, transform);
+  anariSetParameter(
+      m_device, m_frame, "srtx::changenumber", ANARI_INT32, &m_resolutionChangeNumber);
+  anariCommitParameters(m_device, m_frame);
+
+  m_cameraDirty = false;
+}
+
 void SrtxViewport::renderFrame()
 {
   if (!m_deviceReady || !m_frame)
     return;
 
+  // Fly-through navigation runs before any device commits so the pose
+  // generated by this frame's input becomes part of the same commit batch as
+  // the pending resolution change (if any). Both pushers share
+  // m_resolutionChangeNumber so the server sees a monotonically increasing
+  // scene-state version for each batch.
+  handleFlyInput();
+
   // Resolution control: push a new server-side resolution if the active mode
   // calls for one (Custom value changed, MatchViewport debounce expired). This
   // re-commits the frame before kicking off the next render.
   pushResolutionParametersIfNeeded();
+
+  // Camera control: push a new world matrix to the camera prim if the local
+  // fly-cam pose has drifted from the last committed one. Sharing the change
+  // number with the resolution path means a single increment is enough to
+  // tag both writes for the same render pass.
+  pushCameraTransformIfNeeded();
 
   anariRenderFrame(m_device, m_frame);
   anariFrameReady(m_device, m_frame, ANARI_WAIT);
@@ -461,6 +759,33 @@ void SrtxViewport::renderFrame()
   }
 
   anariUnmapFrame(m_device, m_frame, "channel.color");
+
+  // Lazy seed-from-USD. The first attempt right after connect() typically
+  // returns false because the server has not yet assigned a change-number
+  // to the freshly-created stream; ReadSceneValues rejects the query in
+  // that window. We retry once per renderFrame() after the first round-
+  // tripped frame so the server has at least one change-number on record,
+  // and decrement an attempt budget so a persistently failing path (e.g.
+  // a bogus prim) does not spam gRPC + the log forever.
+  if (m_seedPending && m_seedAttemptsRemaining > 0)
+  {
+    --m_seedAttemptsRemaining;
+    if (seedCameraFromUsd())
+    {
+      m_seedPending = false;
+    }
+    else if (m_seedAttemptsRemaining == 0)
+    {
+      // Out of retries: surface a one-line summary so the user is not left
+      // wondering why the manipulator never bound to their authored pose.
+      // The detailed gRPC reason has already been logged via the device's
+      // ANARI status callback.
+      m_statusMessage = "Camera seed failed for '" + m_cameraPath
+          + "' after retries (see log for details)";
+      tsd::core::logWarning("%s", m_statusMessage.c_str());
+      m_seedPending = false;
+    }
+  }
 }
 
 void SrtxViewport::ui_menubar()
@@ -518,6 +843,55 @@ void SrtxViewport::setCompressionType(std::string value)
   m_paramsChanged = true;
 }
 
+void SrtxViewport::setCameraPath(std::string value)
+{
+  if (value == m_cameraPath)
+    return;
+  m_cameraPath = std::move(value);
+  // Only re-push the current pose against the new path when the user has
+  // already engaged fly-through navigation. Without this guard, simply
+  // typing in a camera path would cause the next renderFrame() to push our
+  // default starting pose to the USD camera, clobbering whatever pose was
+  // authored in the stage. Matches the same m_hasUserPose gate used by
+  // connect()/setupDevice reuse.
+  if (m_hasUserPose)
+    m_cameraDirty = true;
+  // Note: we deliberately do NOT call seedCameraFromUsd() here. With the
+  // current per-keystroke InputText handling in SrtxControlPanel, every
+  // character would trigger a synchronous gRPC ReadSceneValues. Seeding is
+  // anchored to connect() instead; users who want to re-seed from a new
+  // camera path can reconnect.
+}
+
+void SrtxViewport::setFlySpeed(float value)
+{
+  m_flySpeed = std::max(0.f, value);
+}
+
+void SrtxViewport::setLookSensitivity(float value)
+{
+  m_lookSensitivity = std::max(0.f, value);
+}
+
+void SrtxViewport::applyCameraPath()
+{
+  // Force a re-seed even if the user has already engaged navigation. The
+  // intended workflow is: user edits the camera-path text field, then clicks
+  // "Apply Camera Path" to rebind the manipulator to the freshly typed prim.
+  // seedCameraFromUsd() normally bails when m_hasUserPose is set so we don't
+  // stomp an active fly-cam pose -- we clear that flag here, do the read,
+  // and let the seed restore it via the same path. If the read fails (e.g.
+  // empty path or the new prim has no fabric worldMatrix yet), m_hasUserPose
+  // is left unset so navigation will start fresh from the local default
+  // rather than continuing to push the old pose to the new prim.
+  m_hasUserPose = false;
+  m_cameraDirty = false;
+  // Re-seed deferred to renderFrame() so the lazy-retry path uses the same
+  // change-number progression as the initial connect-time seed.
+  m_seedPending = !m_cameraPath.empty();
+  m_seedAttemptsRemaining = m_seedPending ? 8 : 0;
+}
+
 void SrtxViewport::setResolutionMode(ResolutionMode mode)
 {
   if (mode == m_resolutionMode)
@@ -540,6 +914,21 @@ void SrtxViewport::connect()
   if (!m_device)
     setupDevice();
   applyParameters();
+  // Re-push the current fly-cam pose against the freshly created frame.
+  // Without this, a disconnect/reconnect would silently snap back to the
+  // USD-default camera transform; setupDevice() makes a new ANARI frame and
+  // applyParameters() only ships srtx::cameraPath, not the transform.
+  // m_hasUserPose gates this so a first-time connect doesn't trample the
+  // USD-authored camera with our local default starting pose.
+  if (!m_cameraPath.empty() && m_hasUserPose)
+    m_cameraDirty = true;
+  // Seed local fly-cam state from the USD-authored camera pose so the very
+  // first navigation input starts from "wherever the scene's camera was".
+  // Deferred: the immediate read right after connect tends to fail because
+  // the server has not yet assigned a change-number to the new stream. The
+  // renderFrame() loop retries while m_seedPending is true.
+  m_seedPending = !m_cameraPath.empty() && !m_hasUserPose;
+  m_seedAttemptsRemaining = m_seedPending ? 8 : 0;
 }
 
 void SrtxViewport::disconnect()
