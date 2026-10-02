@@ -10,6 +10,8 @@
 // tsd_rendering
 #include "tsd/rendering/index/RenderIndexFilterFcn.hpp"
 #include "tsd/rendering/view/Manipulator.hpp"
+// std
+#include <functional>
 
 namespace tsd::rendering {
 
@@ -59,6 +61,9 @@ struct RenderIndex : public BaseUpdateDelegate
   void signalInvalidateCachedObjects() override;
   void signalAnimationTimeChanged(float time) override;
 
+  using AnimationTimeCallback = std::function<void(float)>;
+  void setAnimationTimeCallback(AnimationTimeCallback cb);
+
  protected:
   virtual void updateWorld() = 0;
 
@@ -69,6 +74,7 @@ struct RenderIndex : public BaseUpdateDelegate
   std::vector<anari::Instance> m_externalInstances;
 
  private:
+  AnimationTimeCallback m_animationTimeCallback;
   friend struct RenderToAnariObjectsVisitor;
 };
 

@@ -27,6 +27,10 @@ struct BaseViewport : public Window
   void buildUI() override;
   void setManipulator(tsd::rendering::Manipulator *m);
 
+  // Current render target size in pixels (after resolution scale). Used by
+  // exporters and diagnostics.
+  tsd::math::int2 renderPixelSize() const;
+
  protected:
   void saveSettings(tsd::core::DataNode &thisWindowRoot) override;
   void loadSettings(tsd::core::DataNode &thisWindowRoot) override;

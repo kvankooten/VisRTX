@@ -329,23 +329,26 @@ void Application::uiMainMenuBar_Edit()
 void Application::uiMainMenuBar_Tools()
 {
   if (ImGui::BeginMenu("Tools")) {
-    if (ImGui::BeginMenu("OpenUSD Device")) {
-      if (usdDeviceIsSetup()) {
-        if (ImGui::MenuItem("Disable"))
-          teardownUsdDevice();
-      } else {
-        if (ImGui::MenuItem("Enable"))
-          setupUsdDevice();
+    if (hasUsdExportMenu()) {
+      if (ImGui::BeginMenu("OpenUSD Device")) {
+        if (usdDeviceIsSetup()) {
+          if (ImGui::MenuItem("Disable"))
+            teardownUsdDevice();
+        } else {
+          if (ImGui::MenuItem("Enable"))
+            setupUsdDevice();
+        }
+        ImGui::Separator();
+        ImGui::BeginDisabled(!usdDeviceIsSetup());
+        if (ImGui::MenuItem("Sync"))
+          syncUsdScene();
+        ImGui::EndDisabled();
+        ImGui::EndMenu();
       }
+
       ImGui::Separator();
-      ImGui::BeginDisabled(!usdDeviceIsSetup());
-      if (ImGui::MenuItem("Sync"))
-        syncUsdScene();
-      ImGui::EndDisabled();
-      ImGui::EndMenu();
     }
 
-    ImGui::Separator();
 
     if (ImGui::MenuItem("Flow Analysis"))
       m_vorticityDialog->show();
@@ -578,61 +581,23 @@ void Application::loadStateForNextFrame()
   m_filenameToLoadNextFrame.clear();
 }
 
-void Application::setupUsdDevice()
+bool Application::hasUsdExportMenu() const
 {
-  if (usdDeviceIsSetup())
-    return;
-
-  auto d = m_usdDevice.device;
-
-  if (d == nullptr) {
-    d = m_core.anari.loadDevice("usd");
-    if (!d) {
-      tsd::core::logWarning("USD device failed to load");
-      return;
-    }
-    anari::retain(d, d);
-    m_usdDevice.device = d;
-  }
-
-  m_usdDevice.renderIndex =
-      m_core.anari.acquireRenderIndex(m_core.tsd.scene, "usd", d);
-  m_usdDevice.frame = anari::newObject<anari::Frame>(d);
-  anari::setParameter(
-      d, m_usdDevice.frame, "world", m_usdDevice.renderIndex->world());
+  return false;
 }
+
+void Application::setupUsdDevice()
+{}
+
+void Application::syncUsdScene()
+{}
+
+void Application::teardownUsdDevice()
+{}
 
 bool Application::usdDeviceIsSetup() const
 {
-  return m_usdDevice.device != nullptr && m_usdDevice.renderIndex != nullptr;
-}
-
-void Application::syncUsdScene()
-{
-  tsd::core::logStatus("synchronizing USD ANARI device scene...");
-  if (!usdDeviceIsSetup()) {
-    tsd::core::logWarning("USD device not setup -- cannot sync scene");
-    return;
-  }
-  tsd::core::Timer timer;
-  timer.start();
-  anari::render(m_usdDevice.device, m_usdDevice.frame);
-  anari::wait(m_usdDevice.device, m_usdDevice.frame);
-  timer.end();
-  tsd::core::logStatus("...sync complete (%.2f ms)", timer.milliseconds());
-}
-
-void Application::teardownUsdDevice()
-{
-  if (!usdDeviceIsSetup())
-    return;
-  tsd::core::logStatus("tearing down USD device...");
-  auto d = m_usdDevice.device;
-  m_core.anari.releaseRenderIndex(d);
-  anari::release(d, m_usdDevice.frame);
-  anari::release(d, d);
-  m_usdDevice.device = nullptr;
-  m_usdDevice.renderIndex = nullptr;
+  return false;
 }
 
 void Application::setupTsdDevice()

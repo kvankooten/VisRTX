@@ -227,9 +227,15 @@ void RenderIndex::signalInvalidateCachedObjects()
   updateWorld();
 }
 
-void RenderIndex::signalAnimationTimeChanged(float)
+void RenderIndex::signalAnimationTimeChanged(float time)
 {
-  // no-op
+  if (m_animationTimeCallback)
+    m_animationTimeCallback(time);
+}
+
+void RenderIndex::setAnimationTimeCallback(AnimationTimeCallback cb)
+{
+  m_animationTimeCallback = std::move(cb);
 }
 
 } // namespace tsd::rendering

@@ -98,10 +98,12 @@ class Application : public anari_viewer::Application
 
   void loadStateForNextFrame();
 
-  void setupUsdDevice();
-  bool usdDeviceIsSetup() const;
-  void syncUsdScene();
-  void teardownUsdDevice();
+  // Optional Tools -> OpenUSD Device; default is hidden / no-op.
+  virtual bool hasUsdExportMenu() const;
+  virtual void setupUsdDevice();
+  virtual void teardownUsdDevice();
+  virtual void syncUsdScene();
+  virtual bool usdDeviceIsSetup() const;
 
   void setupTsdDevice();
   bool tsdDeviceIsSetup() const;
@@ -143,13 +145,6 @@ class Application : public anari_viewer::Application
   std::string m_filenameToLoadNextFrame;
 
   std::unique_ptr<ExtensionManager> m_extensionManager;
-
-  struct UsdDeviceState
-  {
-    anari::Device device{nullptr};
-    anari::Frame frame{nullptr};
-    tsd::rendering::RenderIndex *renderIndex{nullptr};
-  } m_usdDevice;
 
   struct TsdDeviceState
   {

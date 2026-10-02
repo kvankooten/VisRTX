@@ -34,6 +34,11 @@ void BaseViewport::setManipulator(tsd::rendering::Manipulator *m)
   m_camera.arcball = m ? m : &m_camera.localArcball;
 }
 
+tsd::math::int2 BaseViewport::renderPixelSize() const
+{
+  return m_viewport.renderSize;
+}
+
 void BaseViewport::saveSettings(tsd::core::DataNode &root)
 {
   // Viewport settings //
