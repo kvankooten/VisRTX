@@ -34,6 +34,8 @@ void SrtxControlPanel::buildUI()
   ImGui::Separator();
   ui_camera();
   ImGui::Separator();
+  ui_timingCapture();
+  ImGui::Separator();
   ui_controls();
   ImGui::Separator();
   ui_frameCapture();
@@ -179,6 +181,43 @@ void SrtxControlPanel::ui_camera()
         "Re-read the worldMatrix of the configured camera path and use that\n"
         "as the starting pose for further navigation. Use this after editing\n"
         "the camera-path text field to rebind the manipulator to that prim.");
+  }
+
+  ImGui::Unindent();
+}
+
+void SrtxControlPanel::ui_timingCapture()
+{
+  ImGui::Text("Stream Timing Capture");
+  ImGui::Indent();
+
+  char pathBuf[512] = {};
+  std::strncpy(pathBuf,
+      m_viewport->timingCapturePath().c_str(),
+      sizeof(pathBuf) - 1);
+  if (ImGui::InputText("CSV File", pathBuf, sizeof(pathBuf)))
+    m_viewport->setTimingCapturePath(pathBuf);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+  {
+    ImGui::SetTooltip(
+        "Full absolute path to the file the SRTX stream-reader timing\n"
+        "log will be written to (e.g. D:/dev/VisRTX/_profile/timing.csv).\n"
+        "The parent directory is created if it does not exist; the file\n"
+        "itself is created on the first flush and appended to on\n"
+        "subsequent flushes within the same connection.");
+  }
+
+  bool enabled = m_viewport->timingCaptureEnabled();
+  ImGui::BeginDisabled(m_viewport->timingCapturePath().empty());
+  if (ImGui::Checkbox("Capture enabled", &enabled))
+    m_viewport->setTimingCaptureEnabled(enabled);
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+  {
+    ImGui::SetTooltip(
+        "Toggle the in-memory capture. Disabling flushes whatever\n"
+        "events were collected since the last enable to the CSV path.\n"
+        "Capture also auto-flushes on disconnect / shutdown.");
   }
 
   ImGui::Unindent();

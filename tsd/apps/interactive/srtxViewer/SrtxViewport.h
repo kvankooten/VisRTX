@@ -11,6 +11,7 @@
 // anari
 #include <anari/anari_cpp.hpp>
 // std
+#include <chrono>
 #include <string>
 
 namespace tsd_srtx {
@@ -66,6 +67,16 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   void setFlySpeed(float value);
   float lookSensitivity() const { return m_lookSensitivity; }
   void setLookSensitivity(float value);
+
+  // Stream-reader timing capture. The path is the CSV destination on
+  // disk; the enabled flag is the on/off switch. Both can be edited
+  // while connected; pushTimingCaptureIfNeeded() forwards changes to the
+  // device on the next renderFrame() pass so the user does not need to
+  // reconnect to start/stop a capture session.
+  const std::string &timingCapturePath() const { return m_timingCapturePath; }
+  void setTimingCapturePath(std::string value);
+  bool timingCaptureEnabled() const { return m_timingCaptureEnabled; }
+  void setTimingCaptureEnabled(bool enabled);
 
   // Re-seed the local fly-cam pose from the worldMatrix authored on the
   // currently configured camera path. Equivalent to "rebind the manipulator
@@ -154,6 +165,13 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   void handleFlyInput();
   void pushCameraTransformIfNeeded();
 
+  // If the effective timing-capture state (path + enabled flag) differs
+  // from what we last sent to the device, push a fresh
+  // srtx::timingCapturePath value. Sending an empty string disables
+  // capture on the device, which matches the toggle-off case here.
+  // Called once per renderFrame() pass.
+  void pushTimingCaptureIfNeeded();
+
   // Ask the device for the camera prim's current worldMatrix and use it to
   // seed m_camPosition / m_camYawPitch so the first fly-through input starts
   // from the USD-authored pose instead of from the hard-coded default. Best-
@@ -212,6 +230,15 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   float m_flySpeed{1.f};      // world units / second when WASD is held
   float m_lookSensitivity{0.005f}; // radians per pixel
 
+  // Stream-reader timing capture: configured path + enabled toggle, plus
+  // a memo of what was last actually pushed to the device so a per-frame
+  // diff is enough to drive enable/disable transitions without spamming
+  // commitParameters() with identical strings.
+  std::string m_timingCapturePath;
+  bool m_timingCaptureEnabled{false};
+  std::string m_lastSentTimingCapturePath;
+  bool m_haveLastSentTimingCapture{false};
+
   // Resolution control: which mode is active, the user's manual choice for
   // Custom mode, the size we last actually sent to the device (debounced
   // against rapid dock changes), and the change-number counter we increment
@@ -252,6 +279,17 @@ struct SrtxViewport : public tsd::ui::imgui::BaseViewport
   int m_screenshotIndex{0};
   uint32_t m_lastFrameWidth{0};
   uint32_t m_lastFrameHeight{0};
+
+  // Frame timing / FPS instrumentation. Measured around renderFrame() so
+  // costs include all of the per-frame work (input handling, parameter
+  // pushes, the ANARI render+wait, mapFrame, and pipeline updates). The
+  // "wait" sample is measured around anariRenderFrame + anariFrameReady so
+  // it isolates the time the host thread spends parked on the SRTX server
+  // round-trip. Exponential moving averages are used so the overlay stays
+  // readable at low frame rates without a long sample window.
+  double m_emaFrameMs{0.0};
+  double m_emaWaitMs{0.0};
+  bool m_haveTimingSamples{false};
 };
 
 } // namespace tsd_srtx
