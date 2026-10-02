@@ -3,6 +3,7 @@
 
 #include "tsd/core/scene/objects/Camera.hpp"
 #include "tsd/core/scene/Scene.hpp"
+#include "tsd/core/TSDMath.hpp"
 // std
 #include <cmath>
 #include <string>
@@ -24,10 +25,9 @@ Camera::Camera(Token subtype) : Object(ANARI_CAMERA, subtype)
       .setValue(float3(0.f, 1.f, 0.f))
       .setDescription("up direction of the camera");
 
-  // Image region in normalized screen-space coordinates
-  // Using float4 for FLOAT32_BOX2 ((0, 0), (1, 1))
+  // ANARI uses ANARI_FLOAT32_BOX2 (see anari::ANARITypeFor<math::box2>)
   addParameter("imageRegion")
-      .setValue(float4(0.f, 0.f, 1.f, 1.f))
+      .setValue(math::box2{float2{0.f, 0.f}, float2{1.f, 1.f}})
       .setDescription(
           "region of the sensor in normalized screen-space coordinates");
 
@@ -84,16 +84,28 @@ Camera::Camera(Token subtype) : Object(ANARI_CAMERA, subtype)
         .setMin(math::radians(0.1f))
         .setMax(math::radians(179.9f));
 
-    addParameter("near").setDescription("near clip plane distance").setMin(0.f);
-    addParameter("far").setDescription("far clip plane distance").setMin(0.f);
+    addParameter("near")
+        .setValue(0.001f)
+        .setDescription("near clip plane distance")
+        .setMin(0.f);
+    addParameter("far")
+        .setValue(1.e6f)
+        .setDescription("far clip plane distance")
+        .setMin(0.f);
 
   } else if (subtype == tokens::camera::orthographic) {
     addParameter("height")
         .setValue(1.f)
         .setDescription("height of the image plane in world units")
         .setMin(0.001f);
-    addParameter("near").setDescription("near clip plane distance").setMin(0.f);
-    addParameter("far").setDescription("far clip plane distance").setMin(0.f);
+    addParameter("near")
+        .setValue(0.001f)
+        .setDescription("near clip plane distance")
+        .setMin(0.f);
+    addParameter("far")
+        .setValue(1.e6f)
+        .setDescription("far clip plane distance")
+        .setMin(0.f);
   } else if (subtype == tokens::camera::omnidirectional) {
     // KHR_CAMERA_OMNIDIRECTIONAL extension
     addParameter("layout")
