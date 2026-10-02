@@ -6,3 +6,6 @@ docs/gen/*
 docs/out/*
 .match3D
 .anari_deps
+
+# Local-only agent rules (never pushed)
+AGENTS.local.md
