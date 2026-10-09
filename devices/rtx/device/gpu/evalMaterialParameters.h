@@ -187,6 +187,47 @@ VISRTX_DEVICE uint32_t decodeCurveAttributeIndices(
   return ggd.curve.indices[hit.primID];
 }
 
+// Follow the same vertex/primitive/instance/constant precedence as the reader.
+// Uniform MDL lookups must not consume an overriding varying attribute.
+VISRTX_DEVICE bool attributeIsPresent(
+    MaterialAttribute attribute, const SurfaceHit &hit, bool uniformLookup)
+{
+  const uint8_t id = static_cast<uint8_t>(attribute);
+  if (id >= 5 || !hit.geometry || !hit.instance)
+    return false;
+  const auto &g = *hit.geometry;
+  const auto &instance = *hit.instance;
+  const AttributeData *vertex = nullptr;
+  switch (g.type) {
+  case GeometryType::TRIANGLE:
+    if (isPopulated(g.tri.vertexAttrFV[id]))
+      return !uniformLookup;
+    vertex = &g.tri.vertexAttr[id];
+    break;
+  case GeometryType::QUAD:
+    vertex = &g.quad.vertexAttr[id];
+    break;
+  case GeometryType::CYLINDER:
+    vertex = &g.cylinder.vertexAttr[id];
+    break;
+  case GeometryType::CONE:
+    vertex = &g.cone.vertexAttr[id];
+    break;
+  case GeometryType::CURVE:
+    vertex = &g.curve.vertexAttr[id];
+    break;
+  case GeometryType::SPHERE:
+    vertex = &g.sphere.vertexAttr[id];
+    break;
+  default:
+    break;
+  }
+  if ((vertex && isPopulated(*vertex)) || isPopulated(g.attr[id])
+      || instance.attrUniformArrayPresent[id])
+    return !uniformLookup;
+  return instance.attrUniformPresent[id] || g.attrUniformPresent[id];
+}
+
 VISRTX_DEVICE vec4 readAttributeValue(
     MaterialAttribute attribute, const SurfaceHit &hit)
 {

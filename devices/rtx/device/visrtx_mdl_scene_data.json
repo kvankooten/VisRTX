@@ -1,0 +1,17 @@
+{
+    "info": {
+        "name": "VISRTX_MDL_SCENE_DATA",
+        "type": "extension",
+        "dependencies": [
+            "visrtx_material_mdl"
+        ]
+    },
+    "objects": [
+        {
+            "type": "ANARI_MATERIAL",
+            "name": "mdl",
+            "description": "Native MDL named scene data: sceneData.<name> (ANARI_STRING) binds a name to attribute0..3 or color; sceneData.<name>.uniform (ANARI_BOOL, default false) enables geometry-constant uniform lookups. Float/color lookups reuse interpolated attributes and return defaults for missing, nonfinite or incompatible uniform data. Integer/matrix lookups remain unsupported. These dynamic names are documented rather than listed as literal query parameters.",
+            "parameters": []
+        }
+    ]
+}

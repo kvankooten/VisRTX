@@ -119,6 +119,9 @@ struct TextureHandler : mi::neuraylib::Texture_handler_base
   const visrtx::FrameGPUData *fd;
   const visrtx::DeviceObjectIndex *samplers;
   unsigned int numSamplers;
+  const visrtx::SurfaceHit *hit;
+  const visrtx::MDLSceneDataBinding *sceneData;
+  unsigned int numSceneData;
 };
 
 using ShadingStateMaterial = mi::neuraylib::Shading_state_material;

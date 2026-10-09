@@ -53,6 +53,8 @@ struct VisRTXExtensions
   int VISRTX_SPATIAL_FIELD_NANOVDB_RECTILINEAR;
   int VISRTX_TRIANGLE_BACK_FACE_CULLING;
   int VISRTX_TRIANGLE_FACE_VARYING_ATTRIBUTES;
+  int VISRTX_MDL_SCENE_DATA;
+  int VISRTX_MDL_ANIMATION_TIME;
 };
 
 int visrtxGetInstanceExtensions(
@@ -137,6 +139,10 @@ inline void fillExtensionStruct(
       extensions->VISRTX_TRIANGLE_BACK_FACE_CULLING = 1;
     else if (feature == "ANARI_VISRTX_TRIANGLE_FACE_VARYING_ATTRIBUTES")
       extensions->VISRTX_TRIANGLE_FACE_VARYING_ATTRIBUTES = 1;
+    else if (feature == "ANARI_VISRTX_MDL_SCENE_DATA")
+      extensions->VISRTX_MDL_SCENE_DATA = 1;
+    else if (feature == "ANARI_VISRTX_MDL_ANIMATION_TIME")
+      extensions->VISRTX_MDL_ANIMATION_TIME = 1;
     else if (feature == "ANARI_VISRTX_MATERIAL_MDL")
 #ifdef USE_MDL
       extensions->VISRTX_MATERIAL_MDL = 1;
